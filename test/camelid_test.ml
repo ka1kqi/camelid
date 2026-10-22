@@ -85,7 +85,7 @@ let%expect_test "client: paper URL, auth header, query string, errors" =
   (match Client.open_orders c with Ok _ -> () | Error e -> Format.printf "%a@." Client.pp_error e);
   (match Client.latest_stock_prices c [ "SPY"; "EFA" ] with Ok _ -> () | Error e -> Format.printf "%a@." Client.pp_error e);
   List.iter
-    (fun (m, uri, key, _) -> Printf.printf "%s %s key=%s\n" (match m with `GET -> "GET" | `POST -> "POST" | `DELETE -> "DELETE") uri (Option.value ~default:"-" key))
+    (fun (m, uri, key, _) -> Printf.printf "%s %s key=%s\n" (match m with `GET -> "GET" | `POST -> "POST" | `PATCH -> "PATCH" | `DELETE -> "DELETE") uri (Option.value ~default:"-" key))
     (List.rev !log);
   [%expect {|
     open=true
@@ -100,7 +100,7 @@ let%expect_test "client: paper URL, auth header, query string, errors" =
 let scripted script =
   let calls = Hashtbl.create 8 in
   let request ~meth ~headers:_ ?body:_ uri =
-    let key = ((match meth with `GET -> "GET" | `POST -> "POST" | `DELETE -> "DELETE"), Uri.path uri) in
+    let key = ((match meth with `GET -> "GET" | `POST -> "POST" | `PATCH -> "PATCH" | `DELETE -> "DELETE"), Uri.path uri) in
     let n = Option.value ~default:0 (Hashtbl.find_opt calls key) in
     Hashtbl.replace calls key (n + 1);
     match List.assoc_opt key script with

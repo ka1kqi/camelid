@@ -4,7 +4,7 @@
    [request] may raise on network failures or timeouts; the client turns any exception into
    [Client.Network]. *)
 
-type meth = [ `GET | `POST | `DELETE ]
+type meth = [ `GET | `POST | `PATCH | `DELETE ]
 
 type response = { status : int; body : string }
 
