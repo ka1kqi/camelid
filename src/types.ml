@@ -145,3 +145,28 @@ let latest_trades json =
   | `Assoc kv -> List.map (fun (sym, t) -> (sym, number "p" t)) kv
   | `Null -> []
   | _ -> fail "trades: expected an object"
+
+(* Order statuses after which nothing more will happen. *)
+let is_final = function
+  | "filled" | "canceled" | "expired" | "rejected" | "replaced" | "done_for_day" -> true
+  | _ -> false
+
+type asset = {
+  a_symbol : string;
+  a_class : asset_class;
+  a_status : string;  (** "active" or "inactive" *)
+  tradable : bool;
+  fractionable : bool;
+  shortable : bool;
+}
+
+let asset json =
+  let ac = string "class" json in
+  {
+    a_symbol = Symbol.canonical ~asset_class:ac (string "symbol" json);
+    a_class = asset_class_of_string ac;
+    a_status = string "status" json;
+    tradable = bool "tradable" json;
+    fractionable = bool "fractionable" json;
+    shortable = bool "shortable" json;
+  }

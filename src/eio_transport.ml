@@ -16,8 +16,9 @@ let https config uri raw =
 
 let max_body = 32 * 1024 * 1024
 
-(* [sw] must outlive every request made with the returned transport. *)
-let make ~sw (net : _ Eio.Net.t) : Transport.t =
+(* Each request (connect, send, read
+   the whole body) must finish within [timeout] seconds or it raises [Eio.Time.Timeout]. *)
+let make ?(timeout = 30.) ~clock (net : _ Eio.Net.t) : Transport.t =
   Mirage_crypto_rng_unix.use_default ();
   let client = Cohttp_eio.Client.make ~https:(Some (https (tls_config ()))) net in
   let request ~meth ~headers ?body uri =
@@ -28,8 +29,13 @@ let make ~sw (net : _ Eio.Net.t) : Transport.t =
       | None -> (headers, None)
     in
     let meth = (meth :> Cohttp.Code.meth) in
-    let resp, body = Cohttp_eio.Client.call client ~sw ~headers ?body meth uri in
-    let body = Eio.Buf_read.(parse_exn take_all) body ~max_size:max_body in
-    { Transport.status = Cohttp.Code.code_of_status (Cohttp.Response.status resp); body }
+    Eio.Time.with_timeout_exn clock timeout (fun () ->
+        Eio.Switch.run @@ fun req_sw ->
+        let resp, body = Cohttp_eio.Client.call client ~sw:req_sw ~headers ?body meth uri in
+        let body = Eio.Buf_read.(parse_exn take_all) body ~max_size:max_body in
+        { Transport.status = Cohttp.Code.code_of_status (Cohttp.Response.status resp); body })
   in
   { Transport.request }
+
+(* A [sleep] for [Client.create] that yields to other fibers instead of blocking the domain. *)
+let sleep clock seconds = Eio.Time.sleep clock seconds

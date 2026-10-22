@@ -5,9 +5,9 @@
 
 let () =
   Eio_main.run @@ fun env ->
-  Eio.Switch.run @@ fun sw ->
   let creds = match Camelid.Env.credentials_from_env () with Ok c -> c | Error e -> failwith e in
-  let client = Camelid.Client.create ~env:Paper ~creds (Camelid.Eio_transport.make ~sw (Eio.Stdenv.net env)) in
+  let client = Camelid.Client.create ~sleep:(Camelid.Eio_transport.sleep (Eio.Stdenv.clock env)) ~env:Paper ~creds
+      (Camelid.Eio_transport.make ~clock:(Eio.Stdenv.clock env) (Eio.Stdenv.net env)) in
   let show = function Ok v -> v | Error e -> failwith (Format.asprintf "%a" Camelid.Client.pp_error e) in
   let account = show (Camelid.Client.account client) in
   let clock = show (Camelid.Client.clock client) in

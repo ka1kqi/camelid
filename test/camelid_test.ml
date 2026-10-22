@@ -95,3 +95,86 @@ let%expect_test "client: paper URL, auth header, query string, errors" =
     GET https://paper-api.alpaca.markets/v2/orders?status=open&limit=500 key=KEY
     GET https://data.alpaca.markets/v2/stocks/trades/latest?symbols=SPY%2CEFA key=KEY
     |}]
+
+(* A transport that replays a script of responses per path, and counts calls. *)
+let scripted script =
+  let calls = Hashtbl.create 8 in
+  let request ~meth ~headers:_ ?body:_ uri =
+    let key = ((match meth with `GET -> "GET" | `POST -> "POST" | `DELETE -> "DELETE"), Uri.path uri) in
+    let n = Option.value ~default:0 (Hashtbl.find_opt calls key) in
+    Hashtbl.replace calls key (n + 1);
+    match List.assoc_opt key script with
+    | Some steps -> (
+        (* past the end of the script, keep repeating the last step *)
+        let step = match List.nth_opt steps n with Some s -> s | None -> List.hd (List.rev steps) in
+        match step with `Raise msg -> failwith msg | `Resp (status, body) -> { Transport.status; body })
+    | None -> { Transport.status = 404; body = "{}" }
+  in
+  ({ Transport.request }, fun key -> Option.value ~default:0 (Hashtbl.find_opt calls key))
+
+let sleeps = ref []
+let client_of transport = Client.create ~sleep:(fun s -> sleeps := s :: !sleeps) ~env:Paper ~creds transport
+
+let order_json status = Printf.sprintf
+  {|{"id":"o1","client_order_id":"c1","symbol":"SPY","status":"%s","side":"buy","qty":"2","filled_qty":"%s",
+     "filled_avg_price":%s,"time_in_force":"day"}|} status (if status = "filled" then "2" else "0") (if status = "filled" then {|"600.5"|} else "null")
+
+let clock_ok = `Resp (200, {|{"timestamp":"t","is_open":true,"next_open":"o","next_close":"c"}|})
+
+let%expect_test "GET retries 429, 503 and network errors with backoff, then succeeds" =
+  sleeps := [];
+  let tr, count = scripted [ (("GET", "/v2/clock"), [ `Resp (429, "slow down"); `Resp (503, "busy"); `Raise "connection reset"; clock_ok ]) ] in
+  (match Client.clock (client_of tr) with Ok c -> Printf.printf "open=%b" c.is_open | Error e -> Format.printf "%a@?" Client.pp_error e);
+  Printf.printf " calls=%d sleeps=%s\n" (count ("GET", "/v2/clock")) (String.concat "," (List.rev_map string_of_float !sleeps));
+  [%expect {| open=true calls=4 sleeps=0.5,1.,2. |}]
+
+let%expect_test "gives up after the attempt limit; network errors are values, not exceptions" =
+  let tr, count = scripted [ (("GET", "/v2/clock"), [ `Raise "timeout" ]) ] in
+  (match Client.clock (client_of tr) with Ok _ -> () | Error e -> Format.printf "%a@?" Client.pp_error e);
+  Printf.printf " calls=%d\n" (count ("GET", "/v2/clock"));
+  [%expect {| network error: Failure("timeout") calls=4 |}]
+
+let req coid =
+  { Types.req_symbol = "SPY"; req_side = Buy; amount = Qty 2.; req_type = Market; tif = Day; req_client_order_id = coid }
+
+let%expect_test "orders without client_order_id are never retried on 5xx" =
+  let tr, count = scripted [ (("POST", "/v2/orders"), [ `Resp (502, "bad gateway"); `Resp (200, order_json "new") ]) ] in
+  (match Client.submit_order (client_of tr) (req None) with Ok _ -> print_string "ok" | Error e -> Format.printf "%a@?" Client.pp_error e);
+  Printf.printf " calls=%d\n" (count ("POST", "/v2/orders"));
+  [%expect {| HTTP 502: bad gateway calls=1 |}]
+
+let%expect_test "with client_order_id: retried, and a duplicate-id rejection returns the existing order" =
+  let tr, count =
+    scripted
+      [ (("POST", "/v2/orders"), [ `Raise "timeout"; `Resp (422, {|{"code":40010001,"message":"client_order_id must be unique"}|}) ]);
+        (("GET", "/v2/orders:by_client_order_id"), [ `Resp (200, order_json "accepted") ]) ]
+  in
+  (match Client.submit_order (client_of tr) (req (Some "c1")) with
+  | Ok o -> Printf.printf "%s %s" o.id o.status
+  | Error e -> Format.printf "%a@?" Client.pp_error e);
+  Printf.printf " posts=%d lookups=%d\n" (count ("POST", "/v2/orders")) (count ("GET", "/v2/orders:by_client_order_id"));
+  [%expect {| o1 accepted posts=2 lookups=1 |}]
+
+let%expect_test "wait_for_order polls until a final status" =
+  sleeps := [];
+  let tr, count = scripted [ (("GET", "/v2/orders/o1"), [ `Resp (200, order_json "new"); `Resp (200, order_json "partially_filled"); `Resp (200, order_json "filled") ]) ] in
+  (match Client.wait_for_order ~interval:0.25 (client_of tr) "o1" with
+  | Ok o -> Printf.printf "%s filled=%g @ %s" o.status o.filled_qty (Option.fold ~none:"-" ~some:string_of_float o.filled_avg_price)
+  | Error e -> Format.printf "%a@?" Client.pp_error e);
+  Printf.printf " polls=%d sleeps=%d\n" (count ("GET", "/v2/orders/o1")) (List.length !sleeps);
+  [%expect {| filled filled=2 @ 600.5 polls=3 sleeps=2 |}]
+
+let%expect_test "assets: crypto symbol is path-encoded and canonicalised" =
+  let seen = ref "" in
+  let transport =
+    { Transport.request = fun ~meth:_ ~headers:_ ?body:_ uri ->
+        seen := Uri.to_string uri;
+        { status = 200; body = {|{"symbol":"BTC/USD","class":"crypto","status":"active","tradable":true,"fractionable":true,"shortable":false}|} } }
+  in
+  (match Client.asset (client_of transport) "BTC/USD" with
+  | Ok a -> Printf.printf "%s tradable=%b fractionable=%b\n%s\n" a.a_symbol a.tradable a.fractionable !seen
+  | Error e -> Format.printf "%a@?" Client.pp_error e);
+  [%expect {|
+    BTC/USD tradable=true fractionable=true
+    https://paper-api.alpaca.markets/v2/assets/BTC%2FUSD
+    |}]
