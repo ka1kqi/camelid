@@ -1,0 +1,3 @@
+(executable
+ (name account)
+ (libraries camelid eio_main))

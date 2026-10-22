@@ -1,0 +1,4 @@
+(library
+ (name camelid)
+ (public_name camelid)
+ (libraries yojson uri domain-name eio cohttp-eio tls-eio ca-certs mirage-crypto-rng.unix))

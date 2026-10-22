@@ -1,0 +1,6 @@
+(library
+ (name camelid_test)
+ (inline_tests)
+ (libraries camelid yojson uri)
+ (preprocess
+  (pps ppx_expect)))
